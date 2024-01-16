@@ -195,7 +195,7 @@ func (svr *Service) keepControllerWorking() {
 	wait.BackoffUntil(func() (bool, error) {
 		// loopLoginUntilSuccess is another layer of loop that will continuously attempt to
 		// login to the server until successful.
-		svr.loopLoginUntilSuccess(20*time.Second, false)
+		svr.loopLoginUntilSuccess(20*time.Second, lo.FromPtr(svr.common.LoginFailExit))
 		if svr.ctl != nil {
 			<-svr.ctl.Done()
 			return false, errors.New("control is closed and try another loop")
