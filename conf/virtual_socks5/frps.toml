@@ -1,0 +1,2 @@
+# FRP server example: only needs to expose port for frpc connections
+bindPort = 7000

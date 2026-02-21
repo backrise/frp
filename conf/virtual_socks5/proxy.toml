@@ -1,0 +1,17 @@
+# FRP client running on the machine that provides service (e.g. local SSH or SOCKS5 exit)
+serverAddr = "127.0.0.1"
+serverPort = 7000
+
+# Optional: STUN server for XTCP NAT traversal (default: stun.easyvoip.com:3478)
+# natHoleStunServer = "stun.easyvoip.com:3478"
+
+# xtcp proxy + socks5 plugin: when visitor connects, entire SOCKS5 connection is forwarded here
+[[proxies]]
+name = "socks5_proxy"
+type = "xtcp"
+secretKey = "abc123"
+[proxies.plugin]
+type = "socks5"
+# optional: set SOCKS5 username and password
+# username = "socks_user"
+# password = "socks_pass"

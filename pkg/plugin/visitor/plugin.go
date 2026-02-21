@@ -23,6 +23,16 @@ import (
 	"github.com/fatedier/frp/pkg/vnet"
 )
 
+// Helper wraps minimal functions needed by plugins.
+// This interface is defined here to avoid circular import.
+// The actual Helper implementation in client/visitor package will satisfy this interface.
+type Helper interface {
+	// ConnectServer directly connects to the frp server.
+	ConnectServer() (net.Conn, error)
+	// RunID returns the run id of current controller.
+	RunID() string
+}
+
 // PluginContext provides the necessary context and callbacks for visitor plugins.
 type PluginContext struct {
 	// Name is the unique identifier for this visitor, used for logging and routing.
@@ -34,9 +44,20 @@ type PluginContext struct {
 	// VnetController manages TUN device routing. May be nil if virtual networking is disabled.
 	VnetController *vnet.Controller
 
+	// Helper provides access to frp server connection and run ID.
+	Helper Helper
+
 	// SendConnToVisitor sends a connection to the visitor's internal processing queue.
 	// Does not return error; failures are handled by closing the connection.
 	SendConnToVisitor func(net.Conn)
+
+	// ConnectToProxy creates a visitor connection to the specified proxy.
+	// proxyName: target proxy name
+	// secretKey: secret key for authentication
+	// useEncryption: whether to use encryption (inherited from current visitor config)
+	// useCompression: whether to use compression (inherited from current visitor config)
+	// Returns a connection that can be used to forward data to the proxy.
+	ConnectToProxy func(proxyName, secretKey string, useEncryption, useCompression bool) (net.Conn, error)
 }
 
 // Creators is used for create plugins to handle connections.

@@ -16,13 +16,20 @@ package visitor
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"net"
 	"sync"
+	"time"
+
+	libio "github.com/fatedier/golib/io"
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"
+	"github.com/fatedier/frp/pkg/msg"
 	plugin "github.com/fatedier/frp/pkg/plugin/visitor"
 	"github.com/fatedier/frp/pkg/transport"
 	netpkg "github.com/fatedier/frp/pkg/util/net"
+	"github.com/fatedier/frp/pkg/util/util"
 	"github.com/fatedier/frp/pkg/util/xlog"
 	"github.com/fatedier/frp/pkg/vnet"
 )
@@ -42,11 +49,18 @@ type Helper interface {
 	RunID() string
 }
 
-// Visitor is used for forward traffics from local port tot remote service.
+// ProxyConnOpener opens a connection to a proxy. Kept as separate interface for easier extension.
+type ProxyConnOpener interface {
+	OpenConnToProxy(proxyName, secretKey string, useEncryption, useCompression bool) (net.Conn, error)
+}
+
+// Visitor is used for forward traffics from local port to remote service.
+// ProxyConnOpener is embedded so all visitors implement it; extend ProxyConnOpener without touching Visitor.
 type Visitor interface {
 	Run() error
 	AcceptConn(conn net.Conn) error
 	Close()
+	ProxyConnOpener
 }
 
 func NewVisitor(
@@ -64,24 +78,6 @@ func NewVisitor(
 		ctx:        ctx,
 		internalLn: netpkg.NewInternalListener(),
 	}
-	if cfg.GetBaseConfig().Plugin.Type != "" {
-		p, err := plugin.Create(
-			cfg.GetBaseConfig().Plugin.Type,
-			plugin.PluginContext{
-				Name:           cfg.GetBaseConfig().Name,
-				Ctx:            ctx,
-				VnetController: helper.VNetController(),
-				SendConnToVisitor: func(conn net.Conn) {
-					_ = baseVisitor.AcceptConn(conn)
-				},
-			},
-			cfg.GetBaseConfig().Plugin.VisitorPluginOptions,
-		)
-		if err != nil {
-			return nil, err
-		}
-		baseVisitor.plugin = p
-	}
 	switch cfg := cfg.(type) {
 	case *v1.STCPVisitorConfig:
 		visitor = &STCPVisitor{
@@ -90,9 +86,10 @@ func NewVisitor(
 		}
 	case *v1.XTCPVisitorConfig:
 		visitor = &XTCPVisitor{
-			BaseVisitor:   &baseVisitor,
-			cfg:           cfg,
-			startTunnelCh: make(chan struct{}),
+			BaseVisitor:     &baseVisitor,
+			cfg:             cfg,
+			startTunnelCh:   make(chan struct{}),
+			dynamicSessions: make(map[string]TunnelSession),
 		}
 	case *v1.SUDPVisitorConfig:
 		visitor = &SUDPVisitor{
@@ -100,6 +97,26 @@ func NewVisitor(
 			cfg:          cfg,
 			checkCloseCh: make(chan struct{}),
 		}
+	}
+	if cfg.GetBaseConfig().Plugin.Type != "" {
+		p, err := plugin.Create(
+			cfg.GetBaseConfig().Plugin.Type,
+			plugin.PluginContext{
+				Name:           cfg.GetBaseConfig().Name,
+				Ctx:            ctx,
+				VnetController: helper.VNetController(),
+				Helper:         helper,
+				SendConnToVisitor: func(conn net.Conn) {
+					_ = baseVisitor.AcceptConn(conn)
+				},
+				ConnectToProxy: visitor.OpenConnToProxy,
+			},
+			cfg.GetBaseConfig().Plugin.VisitorPluginOptions,
+		)
+		if err != nil {
+			return nil, err
+		}
+		baseVisitor.plugin = p
 	}
 	return visitor, nil
 }
@@ -129,4 +146,64 @@ func (v *BaseVisitor) Close() {
 	if v.plugin != nil {
 		v.plugin.Close()
 	}
+}
+
+// createVisitorConnToProxy creates a visitor connection to the specified proxy.
+// This function encapsulates the logic for creating a visitor connection,
+// similar to STCPVisitor.handleConn but for dynamic proxy connections.
+func createVisitorConnToProxy(
+	helper Helper,
+	proxyName, secretKey string,
+	useEncryption, useCompression bool,
+) (net.Conn, error) {
+	// Connect to frps
+	visitorConn, err := helper.ConnectServer()
+	if err != nil {
+		return nil, fmt.Errorf("connect to server error: %v", err)
+	}
+
+	// Send NewVisitorConn message
+	now := time.Now().Unix()
+	newVisitorConnMsg := &msg.NewVisitorConn{
+		RunID:          helper.RunID(),
+		ProxyName:      proxyName,
+		SignKey:        util.GetAuthKey(secretKey, now),
+		Timestamp:      now,
+		UseEncryption:  useEncryption,
+		UseCompression: useCompression,
+	}
+	if err := msg.WriteMsg(visitorConn, newVisitorConnMsg); err != nil {
+		visitorConn.Close()
+		return nil, fmt.Errorf("send newVisitorConnMsg error: %v", err)
+	}
+
+	// Receive response
+	var newVisitorConnRespMsg msg.NewVisitorConnResp
+	visitorConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	if err := msg.ReadMsgInto(visitorConn, &newVisitorConnRespMsg); err != nil {
+		visitorConn.Close()
+		return nil, fmt.Errorf("read newVisitorConnRespMsg error: %v", err)
+	}
+	visitorConn.SetReadDeadline(time.Time{})
+
+	if newVisitorConnRespMsg.Error != "" {
+		visitorConn.Close()
+		return nil, fmt.Errorf("start new visitor connection error: %s", newVisitorConnRespMsg.Error)
+	}
+
+	// Wrap with encryption/compression if needed
+	var remote io.ReadWriteCloser = visitorConn
+	if useEncryption {
+		remote, err = libio.WithEncryption(remote, []byte(secretKey))
+		if err != nil {
+			visitorConn.Close()
+			return nil, fmt.Errorf("create encryption stream error: %v", err)
+		}
+	}
+	if useCompression {
+		remote = libio.WithCompression(remote)
+	}
+
+	// Return wrapped connection
+	return netpkg.WrapReadWriteCloserToConn(remote, visitorConn), nil
 }

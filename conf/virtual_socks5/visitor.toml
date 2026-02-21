@@ -1,0 +1,19 @@
+# FRP client running on the machine that needs SOCKS5 access (virtual_socks5)
+serverAddr = "127.0.0.1"
+serverPort = 7000
+
+# Optional: STUN server for XTCP (default: stun.easyvoip.com:3478)
+# natHoleStunServer = "stun.easyvoip.com:3478"
+
+# visitor: plugin only (bindPort -1). Proxy is chosen by client userinfo (name:key).
+# serverName/secretKey below are for validation only; plugin uses userinfo, not these.
+[[visitors]]
+name = "local_socks5"
+type = "xtcp"
+serverName = "_"
+secretKey = "_"
+bindPort = -1
+[visitors.plugin]
+type = "virtual_socks5"
+listenAddr = "127.0.0.1:21080"
+mode = "socks5_route"   # default: forward entire SOCKS5 connection to socks5_proxy above

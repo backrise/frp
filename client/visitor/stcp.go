@@ -153,3 +153,8 @@ func (sv *STCPVisitor) handleConn(userConn net.Conn) {
 
 	libio.Join(userConn, remote)
 }
+
+func (sv *STCPVisitor) OpenConnToProxy(proxyName, secretKey string, useEncryption, useCompression bool) (net.Conn, error) {
+	return createVisitorConnToProxy(sv.helper, proxyName, secretKey,
+		sv.cfg.Transport.UseEncryption, sv.cfg.Transport.UseCompression)
+}

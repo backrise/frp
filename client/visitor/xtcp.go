@@ -21,6 +21,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,6 +47,10 @@ type XTCPVisitor struct {
 	startTunnelCh chan struct{}
 	retryLimiter  *rate.Limiter
 	cancel        context.CancelFunc
+
+	// dynamicSessions: per (proxyName, secretKey) for plugin-driven ConnectToProxy (e.g. virtual_socks5 userinfo)
+	dynamicSessions   map[string]TunnelSession
+	dynamicSessionsMu sync.RWMutex
 
 	cfg *v1.XTCPVisitorConfig
 }
@@ -90,6 +95,12 @@ func (sv *XTCPVisitor) Close() {
 	if sv.session != nil {
 		sv.session.Close()
 	}
+	sv.dynamicSessionsMu.Lock()
+	for _, s := range sv.dynamicSessions {
+		s.Close()
+	}
+	sv.dynamicSessions = make(map[string]TunnelSession)
+	sv.dynamicSessionsMu.Unlock()
 }
 
 func (sv *XTCPVisitor) worker() {
@@ -271,6 +282,109 @@ func (sv *XTCPVisitor) getTunnelConn(ctx context.Context) (net.Conn, error) {
 	default:
 	}
 	return nil, err
+}
+
+func (sv *XTCPVisitor) OpenConnToProxy(proxyName, secretKey string, _, _ bool) (net.Conn, error) {
+	sess, err := sv.getOrCreateDynamicSession(proxyName, secretKey)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := sess.OpenConn(sv.ctx)
+	if err != nil {
+		return nil, err
+	}
+	var remote io.ReadWriteCloser = conn
+	if sv.cfg.Transport.UseEncryption {
+		remote, err = libio.WithEncryption(remote, []byte(secretKey))
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("create encryption stream error: %v", err)
+		}
+	}
+	if sv.cfg.Transport.UseCompression {
+		remote = libio.WithCompression(remote)
+	}
+	return netpkg.WrapReadWriteCloserToConn(remote, conn), nil
+}
+
+func dynamicSessionKey(proxyName, secretKey string) string {
+	return proxyName + "\x00" + secretKey
+}
+
+func (sv *XTCPVisitor) getOrCreateDynamicSession(proxyName, secretKey string) (TunnelSession, error) {
+	key := dynamicSessionKey(proxyName, secretKey)
+	sv.dynamicSessionsMu.RLock()
+	sess, ok := sv.dynamicSessions[key]
+	sv.dynamicSessionsMu.RUnlock()
+	if ok && sess != nil {
+		return sess, nil
+	}
+	sv.dynamicSessionsMu.Lock()
+	defer sv.dynamicSessionsMu.Unlock()
+	if sess, ok := sv.dynamicSessions[key]; ok && sess != nil {
+		return sess, nil
+	}
+	newSess, err := sv.makeNatHoleFor(proxyName, secretKey)
+	if err != nil {
+		return nil, err
+	}
+	sv.dynamicSessions[key] = newSess
+	return newSess, nil
+}
+
+// makeNatHoleFor runs NAT hole for (proxyName, secretKey) and returns an inited TunnelSession.
+func (sv *XTCPVisitor) makeNatHoleFor(proxyName, secretKey string) (TunnelSession, error) {
+	xl := xlog.FromContextSafe(sv.ctx)
+	xl.Infof("makeNatHoleFor proxy [%s] start", proxyName)
+	if err := nathole.PreCheck(sv.ctx, sv.helper.MsgTransporter(), proxyName, 5*time.Second); err != nil {
+		return nil, fmt.Errorf("nathole precheck: %w", err)
+	}
+	var opts nathole.PrepareOptions
+	if sv.cfg.NatTraversal != nil && sv.cfg.NatTraversal.DisableAssistedAddrs {
+		opts.DisableAssistedAddrs = true
+	}
+	prepareResult, err := nathole.Prepare([]string{sv.clientCfg.NatHoleSTUNServer}, opts)
+	if err != nil {
+		return nil, fmt.Errorf("nathole prepare: %w", err)
+	}
+	xl.Infof("nathole prepare success for [%s], addresses: %v", proxyName, prepareResult.Addrs)
+	listenConn := prepareResult.ListenConn
+
+	now := time.Now().Unix()
+	transactionID := nathole.NewTransactionID()
+	natHoleVisitorMsg := &msg.NatHoleVisitor{
+		TransactionID: transactionID,
+		ProxyName:     proxyName,
+		Protocol:      sv.cfg.Protocol,
+		SignKey:       util.GetAuthKey(secretKey, now),
+		Timestamp:     now,
+		MappedAddrs:   prepareResult.Addrs,
+		AssistedAddrs: prepareResult.AssistedAddrs,
+	}
+	natHoleRespMsg, err := nathole.ExchangeInfo(sv.ctx, sv.helper.MsgTransporter(), transactionID, natHoleVisitorMsg, 5*time.Second)
+	if err != nil {
+		listenConn.Close()
+		return nil, fmt.Errorf("nathole exchange info: %w", err)
+	}
+	newListenConn, raddr, err := nathole.MakeHole(sv.ctx, listenConn, natHoleRespMsg, []byte(secretKey))
+	if err != nil {
+		listenConn.Close()
+		return nil, fmt.Errorf("make hole: %w", err)
+	}
+	listenConn = newListenConn
+	xl.Infof("nat hole for [%s] successful, remoteAddr [%s]", proxyName, raddr)
+
+	var newSession TunnelSession
+	if strings.ToLower(sv.cfg.Protocol) == "quic" {
+		newSession = NewQUICTunnelSession(sv.clientCfg)
+	} else {
+		newSession = NewKCPTunnelSession()
+	}
+	if err := newSession.Init(listenConn, raddr); err != nil {
+		listenConn.Close()
+		return nil, fmt.Errorf("init tunnel session: %w", err)
+	}
+	return newSession, nil
 }
 
 // 0. PreCheck

@@ -23,11 +23,13 @@ import (
 )
 
 const (
-	VisitorPluginVirtualNet = "virtual_net"
+	VisitorPluginVirtualNet    = "virtual_net"
+	VisitorPluginVirtualSocks5 = "virtual_socks5"
 )
 
 var visitorPluginOptionsTypeMap = map[string]reflect.Type{
-	VisitorPluginVirtualNet: reflect.TypeOf(VirtualNetVisitorPluginOptions{}),
+	VisitorPluginVirtualNet:    reflect.TypeOf(VirtualNetVisitorPluginOptions{}),
+	VisitorPluginVirtualSocks5: reflect.TypeOf(VirtualSocks5VisitorPluginOptions{}),
 }
 
 type VisitorPluginOptions interface {
@@ -84,3 +86,21 @@ type VirtualNetVisitorPluginOptions struct {
 }
 
 func (o *VirtualNetVisitorPluginOptions) Complete() {}
+
+type VirtualSocks5VisitorPluginOptions struct {
+	Type       string `json:"type"`
+	ListenAddr string `json:"listenAddr"` // e.g., "127.0.0.1:1080"
+	// Mode: "socks5_route" (default) or "unpack_forward"
+	// socks5_route: Forward entire SOCKS5 connection to proxy with socks5 plugin
+	// unpack_forward: Unpack SOCKS5, extract target address, forward raw TCP to any proxy type
+	Mode string `json:"mode,omitempty"`
+}
+
+func (o *VirtualSocks5VisitorPluginOptions) Complete() {
+	if o.ListenAddr == "" {
+		o.ListenAddr = "127.0.0.1:1080"
+	}
+	if o.Mode == "" {
+		o.Mode = "socks5_route"
+	}
+}

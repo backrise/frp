@@ -245,6 +245,13 @@ func (sv *SUDPVisitor) getNewVisitorConn() (net.Conn, error) {
 	return netpkg.WrapReadWriteCloserToConn(remote, visitorConn), nil
 }
 
+func (sv *SUDPVisitor) OpenConnToProxy(proxyName, secretKey string, _, _ bool) (net.Conn, error) {
+	if proxyName != sv.cfg.ServerName {
+		return nil, fmt.Errorf("proxy name mismatch: want %s, got %s", sv.cfg.ServerName, proxyName)
+	}
+	return sv.getNewVisitorConn()
+}
+
 func (sv *SUDPVisitor) Close() {
 	sv.mu.Lock()
 	defer sv.mu.Unlock()

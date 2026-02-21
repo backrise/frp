@@ -2,6 +2,21 @@ export PATH := $(PATH):`go env GOPATH`/bin
 export GO111MODULE=on
 LDFLAGS := -s -w
 
+# Cross-build: make frpc GOOS=linux GOARCH=amd64  =>  bin/frpc-linux-amd64
+# Omit GOOS/GOARCH for native build (uses current OS/arch)
+GOOS ?= $(shell go env GOOS)
+GOARCH ?= $(shell go env GOARCH)
+
+# .exe for Windows
+ifeq ($(GOOS),windows)
+	BINARY_SUFFIX := .exe
+else
+	BINARY_SUFFIX :=
+endif
+
+FRPS_BIN := bin/frps-$(GOOS)-$(GOARCH)$(BINARY_SUFFIX)
+FRPC_BIN := bin/frpc-$(GOOS)-$(GOARCH)$(BINARY_SUFFIX)
+
 .PHONY: web frps-web frpc-web frps frpc
 
 all: env fmt web build
@@ -32,10 +47,10 @@ vet: web
 	go vet ./...
 
 frps:
-	env CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -tags frps -o bin/frps ./cmd/frps
+	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) go build -trimpath -ldflags "$(LDFLAGS)" -tags frps -o $(FRPS_BIN) ./cmd/frps
 
 frpc:
-	env CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -tags frpc -o bin/frpc ./cmd/frpc
+	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) go build -trimpath -ldflags "$(LDFLAGS)" -tags frpc -o $(FRPC_BIN) ./cmd/frpc
 
 test: gotest
 
@@ -69,6 +84,6 @@ e2e-compatibility-last-frps:
 alltest: vet gotest e2e
 	
 clean:
-	rm -f ./bin/frpc
-	rm -f ./bin/frps
+	rm -f ./bin/frpc-*
+	rm -f ./bin/frps-*
 	rm -rf ./lastversion
