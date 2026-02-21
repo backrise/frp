@@ -18,6 +18,10 @@ serverPort = 7000
 # default is true
 loginFailExit = true
 
+# When true, exit after control connection is lost (no reconnect). Useful when you
+# need to switch server/config and restart. default is false
+# disconnectExit = false
+
 # console or real logFile path like ./frpc.log
 log.to = "./frpc.log"
 # trace, debug, info, warn, error

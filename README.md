@@ -509,6 +509,8 @@ These configuration files is for reference only. Please do not use this configur
 
 [Full configuration file for frpc (Client)](./conf/frpc_full_example.toml)
 
+Client options `loginFailExit` and `disconnectExit` control exit behavior: `loginFailExit` (default true) exits when the first login fails; `disconnectExit` (default false) exits when the control connection is lost after a successful login instead of reconnecting.
+
 ### Using Environment Variables
 
 Environment variables can be referenced in the configuration file, using Go's standard format:

@@ -113,6 +113,10 @@ type ClientCommonConf struct {
 	// failed login attempt. If false, the client will retry until a login
 	// attempt succeeds. By default, this value is true.
 	LoginFailExit bool `ini:"login_fail_exit" json:"login_fail_exit"`
+	// DisconnectExit controls whether the client should exit when the control
+	// connection is lost after a successful login. If true, the client exits
+	// instead of retrying. By default, this value is false.
+	DisconnectExit bool `ini:"disconnect_exit" json:"disconnect_exit"`
 	// Start specifies a set of enabled proxies by name. If this set is empty,
 	// all supplied proxies are enabled. By default, this value is an empty
 	// set.
@@ -350,6 +354,7 @@ func GetDefaultClientConf() ClientCommonConf {
 		ClientConfig:              legacyauth.GetDefaultClientConf(),
 		TCPMux:                    true,
 		LoginFailExit:             true,
+		DisconnectExit:            false,
 		Protocol:                  "tcp",
 		Start:                     make([]string, 0),
 		TLSEnable:                 true,

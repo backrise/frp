@@ -55,6 +55,11 @@ type ClientCommonConfig struct {
 	// failed login attempt. If false, the client will retry until a login
 	// attempt succeeds. By default, this value is true.
 	LoginFailExit *bool `json:"loginFailExit,omitempty"`
+	// DisconnectExit controls whether the client should exit when the control
+	// connection is lost after a successful login. If true, the client exits
+	// instead of retrying (useful when you need to switch config/server and
+	// restart). By default, this value is false.
+	DisconnectExit *bool `json:"disconnectExit,omitempty"`
 	// Start specifies a set of enabled proxies by name. If this set is empty,
 	// all supplied proxies are enabled. By default, this value is an empty
 	// set.
@@ -83,6 +88,7 @@ func (c *ClientCommonConfig) Complete() error {
 	c.ServerAddr = util.EmptyOr(c.ServerAddr, "0.0.0.0")
 	c.ServerPort = util.EmptyOr(c.ServerPort, 7000)
 	c.LoginFailExit = util.EmptyOr(c.LoginFailExit, lo.ToPtr(true))
+	c.DisconnectExit = util.EmptyOr(c.DisconnectExit, lo.ToPtr(false))
 	c.NatHoleSTUNServer = util.EmptyOr(c.NatHoleSTUNServer, "stun.easyvoip.com:3478")
 
 	if err := c.Auth.Complete(); err != nil {

@@ -78,6 +78,7 @@ func Convert_ClientCommonConf_To_v1(conf *ClientCommonConf) *v1.ClientCommonConf
 
 	out.DNSServer = conf.DNSServer
 	out.LoginFailExit = lo.ToPtr(conf.LoginFailExit)
+	out.DisconnectExit = lo.ToPtr(conf.DisconnectExit)
 	out.Start = conf.Start
 	out.UDPPacketSize = conf.UDPPacketSize
 	out.Metadatas = conf.Metas

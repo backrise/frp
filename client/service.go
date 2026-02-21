@@ -232,6 +232,11 @@ func (svr *Service) Run(ctx context.Context) error {
 func (svr *Service) keepControllerWorking() {
 	<-svr.ctl.Done()
 
+	if lo.FromPtr(svr.common.DisconnectExit) {
+		svr.cancel(nil)
+		return
+	}
+
 	// There is a situation where the login is successful but due to certain reasons,
 	// the control immediately exits. It is necessary to limit the frequency of reconnection in this case.
 	// The interval for the first three retries in 1 minute will be very short, and then it will increase exponentially.
@@ -328,63 +333,84 @@ func (svr *Service) login() (conn net.Conn, connector Connector, err error) {
 	return
 }
 
-func (svr *Service) loopLoginUntilSuccess(maxInterval time.Duration, firstLoginExit bool) {
+// runSessionOnce tries to establish one control session (login + NewControl + Run).
+// Returns (true, nil) on success, (false, err) on failure.
+// If firstLoginExit is true and login fails, the service context is cancelled.
+func (svr *Service) runSessionOnce(firstLoginExit bool) (bool, error) {
 	xl := xlog.FromContextSafe(svr.ctx)
-
-	loginFunc := func() (bool, error) {
-		xl.Infof("try to connect to server...")
-		conn, connector, err := svr.login()
-		if err != nil {
-			xl.Warnf("connect to server error: %v", err)
-			if firstLoginExit {
-				svr.cancel(cancelErr{Err: err})
-			}
-			return false, err
+	xl.Infof("try to connect to server...")
+	conn, connector, err := svr.login()
+	if err != nil {
+		xl.Warnf("connect to server error: %v", err)
+		if firstLoginExit {
+			svr.cancel(cancelErr{Err: err})
 		}
-
-		svr.cfgMu.RLock()
-		proxyCfgs := svr.proxyCfgs
-		visitorCfgs := svr.visitorCfgs
-		svr.cfgMu.RUnlock()
-
-		connEncrypted := svr.clientSpec == nil || svr.clientSpec.Type != "ssh-tunnel"
-
-		sessionCtx := &SessionContext{
-			Common:         svr.common,
-			RunID:          svr.runID,
-			Conn:           conn,
-			ConnEncrypted:  connEncrypted,
-			Auth:           svr.auth,
-			Connector:      connector,
-			VnetController: svr.vnetController,
-		}
-		ctl, err := NewControl(svr.ctx, sessionCtx)
-		if err != nil {
-			conn.Close()
-			xl.Errorf("new control error: %v", err)
-			return false, err
-		}
-		ctl.SetInWorkConnCallback(svr.handleWorkConnCb)
-
-		ctl.Run(proxyCfgs, visitorCfgs)
-		// close and replace previous control
-		svr.ctlMu.Lock()
-		if svr.ctl != nil {
-			svr.ctl.Close()
-		}
-		svr.ctl = ctl
-		svr.ctlMu.Unlock()
-		return true, nil
+		return false, err
 	}
 
-	// try to reconnect to server until success
-	wait.BackoffUntil(loginFunc, wait.NewFastBackoffManager(
+	svr.cfgMu.RLock()
+	proxyCfgs := svr.proxyCfgs
+	visitorCfgs := svr.visitorCfgs
+	svr.cfgMu.RUnlock()
+
+	connEncrypted := svr.clientSpec == nil || svr.clientSpec.Type != "ssh-tunnel"
+
+	sessionCtx := &SessionContext{
+		Common:         svr.common,
+		RunID:          svr.runID,
+		Conn:           conn,
+		ConnEncrypted:  connEncrypted,
+		Auth:           svr.auth,
+		Connector:      connector,
+		VnetController: svr.vnetController,
+	}
+	ctl, err := NewControl(svr.ctx, sessionCtx)
+	if err != nil {
+		conn.Close()
+		xl.Errorf("new control error: %v", err)
+		return false, err
+	}
+	ctl.SetInWorkConnCallback(svr.handleWorkConnCb)
+
+	ctl.Run(proxyCfgs, visitorCfgs)
+	svr.ctlMu.Lock()
+	if svr.ctl != nil {
+		svr.ctl.Close()
+	}
+	svr.ctl = ctl
+	svr.ctlMu.Unlock()
+	return true, nil
+}
+
+func (svr *Service) loopLoginUntilSuccess(maxInterval time.Duration, firstLoginExit bool) {
+	wait.BackoffUntil(func() (bool, error) {
+		return svr.runSessionOnce(firstLoginExit)
+	}, wait.NewFastBackoffManager(
 		wait.FastBackoffOptions{
 			Duration:    time.Second,
 			Factor:      2,
 			Jitter:      0.1,
 			MaxDuration: maxInterval,
 		}), true, svr.ctx.Done())
+}
+
+// RunSession establishes one control session and blocks until it ends (disconnect or ctx cancelled).
+// Does not retry on login failure; caller is responsible for reconnection and config updates.
+func (svr *Service) RunSession(ctx context.Context) error {
+	_, err := svr.runSessionOnce(false)
+	if err != nil {
+		return err
+	}
+	svr.ctlMu.RLock()
+	ctl := svr.ctl
+	svr.ctlMu.RUnlock()
+	select {
+	case <-ctl.Done():
+		return nil
+	case <-ctx.Done():
+		ctl.Close()
+		return ctx.Err()
+	}
 }
 
 func (svr *Service) UpdateAllConfigurer(proxyCfgs []v1.ProxyConfigurer, visitorCfgs []v1.VisitorConfigurer) error {
